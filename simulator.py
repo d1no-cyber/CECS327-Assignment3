@@ -25,8 +25,8 @@ class SimulateNetwork: # This class will simulates a network with message delays
         delay = random.randint(self.min_delay, self.max_delay) # This will randomly pick a network latency
         channel = (src_id, target_id) # Identifying the point-to-point link
         ready = self._channel_ready.get(channel, 0)
-        deliver_time = max(self.time + delay, ready)
-        self._channel_ready[channel] = deliver_time
+        deliverTime = max(self.time + delay, ready)
+        self._channel_ready[channel] = deliverTime
         target = self.replicas[target_id]
 
         def _deliver():
@@ -35,7 +35,7 @@ class SimulateNetwork: # This class will simulates a network with message delays
             else:
                 target.receiveAck(msg)
 
-        self._push(deliver_time, _deliver)
+        self._push(deliverTime, _deliver)
 
     def run(self):
         while self._heap:
