@@ -2,7 +2,7 @@ from multicast import *
 
 # Oanh Tran 0296617186
 
-class Replica:
+class Replica: 
     def __init__(self, replicaID, allReplicas):
         self.replicaID = replicaID
         self.allReplicas = allReplicas   # dict: id -> Replica
@@ -10,6 +10,7 @@ class Replica:
         self.holdbackQueue = []
         self.maxSeen = {rid: (-1, -1) for rid in allReplicas}
         self.delivered = set()
+        self.deliver_log = []
         self.store = {}
 
     def sendToReplicas(self, msg):
@@ -28,9 +29,13 @@ class Replica:
         msg = TOBCAST(updateID=updateID, op=op, ts=ts, senderID=self.replicaID)
         # sender sees its own multicast
         self.insertHoldback(msg)
-        self.maxSeen[self.replicaID] = max(self.maxSeen[self.replicaID], ts)
         # send TOBCAST to other replicas
         self.sendToReplicas(msg)
+        self.clock += 1
+        ackTs = (self.clock, self.replicaID)
+        self.maxSeen[self.replicaID] = max(self.maxSeen[self.replicaID], ackTs)
+        ack = ACK(updateID=updateID, ts=ackTs, senderID=self.replicaID)
+        self.sendToReplicas(ack)
         # try delivery after local insert / later ACKs arrive
         self.deliver()
 
@@ -74,6 +79,7 @@ class Replica:
             self.holdbackQueue.pop(0)
             self.apply(head.op)
             self.delivered.add(head.updateID)
+            self.deliver_log.append(head.updateID)
 
             print(f"Replica {self.replicaID} delivered {head.updateID} {head.op} at ts={head.ts}")
 
