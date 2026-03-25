@@ -1,201 +1,248 @@
-import heapq # Importing heapq for priority queueing that is used in discrete event simulation
-import random # Importing random to simulate random network delays
-from replica import Replica # Importing replica to use as base class for replica logic
-from multicast import TOBCAST # Importing TOBCAST for Total Order Broadcast
+import threading
+import time
+import random
+from collections import defaultdict
+from queue import Queue
 
-class SimulateNetwork: # This class will simulates a network with message delays and event scheduling
-    def __init__(self, min_delay=1, max_delay=8, seed=42): 
-        random.seed(seed) # Ensuring that the simulation is reproducible
-        self.min_delay = min_delay # Initializing min_delay as the minimum time it takes for the message to arrive
-        self.max_delay = max_delay # Initializing max_delay as the maximum time it takes for the message to arrive
-        self.time = 0 # Setting time to zero for global simulation clock
-        self._heap = [] # Creating a heap for an event queue which stores time, sequence, and function
-        self._seq = 0 # This will be use as a tie-breaker when there two events scheduled at the same time
-        self.replicas: dict = {} # Creating a dictionary for mapping ID to Replica objects
-        self._channel_ready: dict = {} # Creating a dictionary to track the last delivery time per channel to ensure that it is in First In First Out order
+# Sovannmonyrotn Kun 033159813
 
-    def _push(self, t, fn): # This is a helper function to push new event to the heap
-        heapq.heappush(self._heap, (t, self._seq, fn))
-        self._seq += 1 # Incrementing the number of sequence by one to maintain event order stable
+channels = {}
+channelsLock = threading.Lock()
 
-    def schedule(self, extra_delay, fn): # This function is used to schedule a function to run after a delay
-        self._push(self.time + extra_delay, fn)
+# This function will create a queue and worker per pair in First In First Out order to ensures delivery
+def getChannel(senderId, receiverId):
+    key = (senderId, receiverId)
+    with channelsLock:
+        if key not in channels:
+            queue = Queue()
+            channels[key] = queue
+            thread = threading.Thread(target=channelWorker, args=(queue, ))
+            thread.start()
+    return channels[key]
 
-    def deliver_to(self, src_id, target_id, msg): # This function will calculate delivery time and schedule a message arrival at the target
-        delay = random.randint(self.min_delay, self.max_delay) # This will randomly pick a network latency
-        channel = (src_id, target_id) # Identifying the point-to-point link
-        ready = self._channel_ready.get(channel, 0)
-        deliverTime = max(self.time + delay, ready)
-        self._channel_ready[channel] = deliverTime
-        target = self.replicas[target_id]
+def channelWorker(queue): # This function will process message one at a time with simulated network latency
+    while True:
+        item = queue.get()
+        if item is None:  # If queue is empty, tell worker to quit
+            break
+        delay, replica, message = item
+        time.sleep(delay)
+        replica.receiveMessage(message)
+        queue.task_done()
 
-        def _deliver():
-            if isinstance(msg, TOBCAST):
-                target.receiveTobcast(msg)
-            else:
-                target.receiveAck(msg)
-
-        self._push(deliverTime, _deliver)
-
-    def run(self):
-        while self._heap:
-            t, _, fn = heapq.heappop(self._heap)
-            self.time = t
-            fn()
-
-
-class SimReplica(Replica):
-
-    def __init__(self, rid, all_replicas, net: SimulateNetwork):
-        super().__init__(rid, all_replicas)
-        self.net = net
-
-    def sendToReplicas(self, msg):
-        for rid in self.allReplicas:
-            if rid != self.replicaID:
-                self.net.deliver_to(self.replicaID, rid, msg)
-
-    def deliver(self):
-        while self.holdbackQueue:
-            head = self.holdbackQueue[0]
-
-            if head.updateID in self.delivered:
-                self.holdbackQueue.pop(0)
-                continue
-
-            if not self.deliverCheck(head):
+def waitForNetwork(): # This function will be to join all channels and repeat it until there's no new one and all queues are drained
+    while True:
+        with channelsLock:
+            seen = set(channels.keys())
+            channel = list(channels.values())
+        for queue in channel:
+            queue.join()
+        with channelsLock:
+            if set(channels.keys()) == seen:
+                for queue in channel:
+                    queue.join()
                 break
 
-            self.holdbackQueue.pop(0)
-            self.apply(head.op)
-            self.delivered.add(head.updateID)
-            self.deliver_log.append(head.updateID)
+class Message:  # TOBCAST
+    def __init__(self, updateID, operation, timestamp, sender):
+        self.updateID = updateID # ID for update
+        self.operation = operation # Dictionary with type, key, and value/suffix
+        self.timestamp = timestamp # Lamport timestamp as tuple (clock, replicaID)
+        self.sender = sender # Replica ID
 
-            print(f"  [t={self.net.time:4d}] R{self.replicaID} DELIVER "
-                  f"{head.updateID:12s} ts={head.ts}")
+class ACK:
+    def __init__(self, updateID, timestamp, sender):
+        self.updateID = updateID # ID of the update being acknowledged
+        self.timestamp = timestamp # stores clock and replicaID
+        self.sender = sender # Replica ID
 
+class Replica:
+    def __init__(self, replicaID, totalReplicas):
+        self.replicaID = replicaID
+        self.clock = 0 # Lamport clock for simulation
+        self.totalReplicas = totalReplicas
+        self.holdback = [] # Sorted list by timestamp tuple
+        self.maxSeen = defaultdict(lambda: (-1, -1)) # Largest timestamp seen from each replica
+        self.store = {}  # For storing replicated key-value
+        self.delivered = set() # Delivered update IDs
+        self.deliverLog = [] # Logs for ordered delivery
+        self.lock = threading.RLock()
+        self.allReplicas = None
 
-def make_sim(n, min_delay=1, max_delay=8, seed=42):
-    net = SimulateNetwork(min_delay=min_delay, max_delay=max_delay, seed=seed)
-    ids = list(range(n))
-    replicas = {i: None for i in ids}
-    for i in ids:
-        replicas[i] = SimReplica(i, replicas, net)
-    net.replicas = replicas
-    return net, replicas
+    def insertHoldback(self, message): # This function will insert messages into the holdback queue and also sorting them
+        for existing in self.holdback:
+            if existing.updateID == message.updateID:
+                return
+        self.holdback.append(message)
+        self.holdback.sort(key=lambda msg: msg.timestamp)  # Total order by (clock, replicaID)
 
+    def incrementClock(self):
+        self.clock += 1
 
-def print_results(replicas):
-    print("\n  Final stores:")
-    for rid in sorted(replicas):
-        print(f"    R{rid}: {replicas[rid].store}")
-    print("\n  Delivery order per replica:")
-    for rid in sorted(replicas):
-        print(f"    R{rid}: {replicas[rid].deliver_log}")
+    def updateClock(self, timestamp):
+        self.clock = max(self.clock, timestamp[0]) + 1
 
+    def broadcast(self, updateID, operation, replicas): # This function will broadcast TOBCAST to all replicas
+        with self.lock:
+            self.incrementClock()
+            ts = (self.clock, self.replicaID)
+            msg = Message(updateID, operation, ts, self.replicaID)
+            self.insertHoldback(msg)
+            for replica in replicas:
+                if replica.replicaID != self.replicaID:
+                    simulateNetwork(self.replicaID, replica, msg)
+            self.incrementClock()
+            ackTs = (self.clock, self.replicaID)
+            self.maxSeen[self.replicaID] = max(self.maxSeen[self.replicaID], ackTs)
+            ack = ACK(updateID, ackTs, self.replicaID)
+            for replica in replicas:
+                if replica.replicaID != self.replicaID:
+                    simulateNetwork(self.replicaID, replica, ack)
+            self.tryDeliver()
 
-def assert_consistent(replicas, label=""):
-    stores = [replicas[r].store for r in sorted(replicas)]
-    logs   = [replicas[r].deliver_log for r in sorted(replicas)]
-    assert all(s == stores[0] for s in stores), \
-        f"[{label}] FAIL stores differ:\n  {stores}"
-    assert all(l == logs[0] for l in logs), \
-        f"[{label}] FAIL delivery orders differ:\n  {logs}"
-    print(f"\n  PASS [{label}]: all {len(replicas)} replicas have identical "
-          f"store AND delivery order")
+    def receiveMessage(self, message): # This function will handle both TOBCAST and ACK
+        with self.lock:
+            if isinstance(message, Message):
+                self.updateClock(message.timestamp)
+                self.insertHoldback(message)
+                self.maxSeen[message.sender] = max(self.maxSeen[message.sender], message.timestamp)
+                # Send ACK to all other replicas
+                self.incrementClock()
+                ackTs = (self.clock, self.replicaID)
+                self.maxSeen[self.replicaID] = max(self.maxSeen[self.replicaID], ackTs)
+                ack = ACK(message.updateID, ackTs, self.replicaID)
+                for replica in self.allReplicas:
+                    if replica.replicaID != self.replicaID:
+                        simulateNetwork(self.replicaID, replica, ack)
+            elif isinstance(message, ACK):
+                self.updateClock(message.timestamp)
+                self.maxSeen[message.sender] = max(self.maxSeen[message.sender], message.timestamp)
+            self.tryDeliver()
 
+    def tryDeliver(self): # This function will attemp to deliver messages from the holdback queue
+        while self.holdback:
+            head = self.holdback[0]
+            if head.updateID in self.delivered:
+                self.holdback.pop(0)
+                continue
+            checkDeliver = True  # Check to see if it is safe to deliver
+            for i in range(self.totalReplicas):
+                if self.maxSeen[i] <= head.timestamp:
+                    checkDeliver = False
+                    break
+            if checkDeliver:
+                self.holdback.pop(0)
+                self.runOperation(head)
+            else:
+                break
 
-def experiment1():
-    print("\n" + "=" * 65)
-    print("Experiment 1: Concurrent Conflicting Updates")
-    print("  3 replicas; R0, R1, R2 each append to key 'x' concurrently")
-    print("=" * 65)
+    def runOperation(self, message):
+        op = message.operation
+        key = op["key"]
+        operationType = op["type"]
+        if operationType == "put":
+            self.store[key] = op["value"]
+        elif operationType == "append":
+            self.store[key] = self.store.get(key, "") + op["suffix"]
+        elif operationType == "incr":
+            self.store[key] = self.store.get(key, 0) + 1
+        self.delivered.add(message.updateID)
+        self.deliverLog.append(message.updateID)
+        print(f"Replica {self.replicaID}: DELIVER {message.updateID} (timestamp={message.timestamp}) -> {key}={self.store[key]}")
 
-    net, replicas = make_sim(n=3, seed=10)
+def simulateNetwork(senderId, replica, message):  # This function is use to simulate network with random delay
+    delay = random.uniform(0.05, 0.8)
+    q = getChannel(senderId, replica.replicaID)
+    q.put((delay, replica, message))
 
-    replicas[0].broadcastUpdate("init", {"type": "put", "key": "x", "value": ""})
-    net.run()
-    print(f"  [init done at t={net.time}]")
+def runSimulation(name, numberofReplicas, updates):
+    global channels
+    with channelsLock:
+        channels = {}  # Resetting channels for each simulation
+    print()
+    print(f"Running: {name}")
+    print()
+    replicas = [Replica(i, numberofReplicas) for i in range(numberofReplicas)]
+    for replica in replicas:
+        replica.allReplicas = replicas # Give each replica a reference to all others
+    threads = []
+    for i in range(len(updates)):
+        targetReplica, operation = updates[i]
+        def startBroadcast(replica=targetReplica, updateId=f"update-{i}", op=operation):
+            replicas[replica].broadcast(updateId, op, replicas)
+        t = threading.Thread(target=startBroadcast)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join() # Waiting for all broadcasts to be initiated before draining the network
+    waitForNetwork()
+    with channelsLock:
+        for q in channels.values():
+            q.put(None)
+    allStates = []
+    for replica in replicas:
+        allStates.append(dict(replica.store))
+    allDeliveries = []
+    for replica in replicas:
+        allDeliveries.append(list(replica.deliverLog))
+    print()
+    print("Final States:")
+    for i in range(len(allStates)):
+        print(f"Replica {i}: {allStates[i]}")
+    print()
+    print("Delivery Orders:")
+    for i in range(len(allDeliveries)):
+        print(f"Replica {i}: {allDeliveries[i]}")
+    initialState = allStates[0]
+    statesStatus = True
+    for state in allStates:
+        if state != initialState:
+            statesStatus = False
+            break
+    if not statesStatus:
+        print("ERROR: States Diverged!")
+    else:
+        print("All replica states are consistent.")
+    initialDelivery = allDeliveries[0]
+    deliveriesStatus = True
+    for delivery in allDeliveries:
+        if delivery != initialDelivery:
+            deliveriesStatus = False
+            break
+    if not deliveriesStatus:
+        print("ERROR: Delivery Order mismatch!")
+    else:
+        print("All replicas delivered updates in the same order.")
 
-    net.schedule(0, lambda: replicas[0].broadcastUpdate(
-        "u1", {"type": "append", "key": "x", "suffix": "A"}))
-    net.schedule(0, lambda: replicas[1].broadcastUpdate(
-        "u2", {"type": "append", "key": "x", "suffix": "B"}))
-    net.schedule(0, lambda: replicas[2].broadcastUpdate(
-        "u3", {"type": "append", "key": "x", "suffix": "C"}))
-    net.run()
+# Experiments
+def experiment1(): # Conflicting Experiment
+    random.seed(10)
+    updates = [
+        (0, {"type": "append", "key": "x", "suffix": "A"}),
+        (1, {"type": "append", "key": "x", "suffix": "B"}),
+        (2, {"type": "append", "key": "x", "suffix": "C"}),
+    ]
+    runSimulation("Concurrent Conflicting Updates", 3, updates)
 
-    print_results(replicas)
-    assert_consistent(replicas, "Experiment 1")
-    final = replicas[0].store["x"]
-    assert set(final) == {"A", "B", "C"} and len(final) == 3, \
-        f"Expected all of A, B, C once: got {final!r}"
-    print(f"  x = {final!r}  (all 3 appends present, same order everywhere)")
+def experiment2(): # High Contention Experiment
+    random.seed(99)
+    updates = []
+    for _ in range(30):
+        replica_id = random.randint(0, 3)
+        updates.append((replica_id, {"type": "incr", "key": "count"}))
+    runSimulation("High Contention (30 updates)", 4, updates)
 
-
-def experiment2():
-    print("\n" + "=" * 65)
-    print("Experiment 2: High Contention")
-    print("  4 replicas; 30 concurrent incr ops on key 'count'")
-    print("=" * 65)
-
-    net, replicas = make_sim(n=4, seed=99)
-
-    replicas[0].broadcastUpdate("init", {"type": "put", "key": "count", "value": 0})
-    net.run()
-    print(f"  [init done at t={net.time}]")
-
-    for i in range(30):
-        sender = i % 4
-        uid    = f"incr{i:02d}"
-        net.schedule(i, lambda s=sender, u=uid: replicas[s].broadcastUpdate(
-            u, {"type": "incr", "key": "count"}))
-
-    net.run()
-
-    print_results(replicas)
-    assert_consistent(replicas, "Experiment 2")
-    got = replicas[0].store["count"]
-    assert got == 30, f"Expected count=30, got {got}"
-    print(f"  count = {got}  (exactly 30 increments applied everywhere)")
-
-
-def experiment3():
-    print("\n" + "=" * 65)
-    print("Experiment 3: Non-Conflicting Updates (different keys)")
-    print("  5 replicas; each writes its own key, then cross-replica appends")
-    print("=" * 65)
-
-    net, replicas = make_sim(n=5, seed=77)
-
-    keys = ["alpha", "beta", "gamma", "delta", "epsilon"]
-
-    for i, key in enumerate(keys):
-        net.schedule(0, lambda s=i, key=key: replicas[s].broadcastUpdate(
-            f"put_{key}", {"type": "put", "key": key, "value": key}))
-    net.run()
-    print(f"  [puts done at t={net.time}]")
-
-    for i, key in enumerate(keys):
-        src = (i + 1) % 5
-        net.schedule(0, lambda s=src, key=key: replicas[s].broadcastUpdate(
-            f"app_{key}", {"type": "append", "key": key, "suffix": "!"}))
-    net.run()
-    print(f"  [appends done at t={net.time}]")
-
-    print_results(replicas)
-    assert_consistent(replicas, "Experiment 3")
-
-    for key in keys:
-        expected = key + "!"
-        got = replicas[0].store[key]
-        assert got == expected, f"Expected {expected!r}, got {got!r}"
-    print("  All keys have correct final value (key + '!')")
-
+def experiment3():  # Non-conflicting experiment
+    random.seed(77)
+    updates = []
+    for i in range(5):
+        updates.append((i, {"type": "put", "key": f"k{i}", "value": f"R{i}"}))
+    for i in range(5):
+        sender = (i + 1) % 5
+        updates.append((sender, {"type": "append", "key": f"k{i}", "suffix": f"_R{sender}"}))
+    runSimulation("Non-Conflicting Updates", 5, updates)
 
 if __name__ == "__main__":
     experiment1()
     experiment2()
     experiment3()
-    print("\n" + "=" * 65)
-    print("All experiments passed.")
