@@ -33,4 +33,8 @@ v       v
 
 ##How to Run
 
+Required experiments:
+```bash
+python simulator.py
+```
 
