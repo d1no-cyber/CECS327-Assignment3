@@ -34,15 +34,15 @@ v       v
 
 Run required experiments:
 ```bash
-python simulator.py
+python3 simulator.py
 ```
 Create output logs:
 ```bash
-python simulator.py > output.txt
+python3 simulator.py > output.txt
 ```
 Unit Tests (Optional)
 ```bash
-python test.py
+python3 test.py
 ```
 
 ## Authors:
