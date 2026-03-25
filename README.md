@@ -17,7 +17,7 @@ For this assignment, we are implementing a key-value store with N replicas. Clie
 - test.py
 
 ## Diagram
-```bash
+```
 Clients
 |      \       (clients can send to any replica)
 v       v
