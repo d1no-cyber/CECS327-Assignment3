@@ -38,10 +38,6 @@ Run required experiments:
 ```bash
 python3 test.py
 ```
-Create output logs:
-```bash
-python3 test.py > output.txt
-```
 
 ### For Part B
 ```bash
