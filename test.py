@@ -1,4 +1,4 @@
-# test_replica.py
+# test.py
 
 from replica import Replica
 

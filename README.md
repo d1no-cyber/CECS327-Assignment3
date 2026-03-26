@@ -33,16 +33,23 @@ v       v
 ## How to Run
 
 Run required experiments:
+
+### For Part A
+```bash
+python3 test.py
+```
+Create output logs:
+```bash
+python3 test.py > output.txt
+```
+
+### For Part B
 ```bash
 python3 simulator.py
 ```
 Create output logs:
 ```bash
 python3 simulator.py > output.txt
-```
-Unit Tests (Optional)
-```bash
-python3 test.py
 ```
 
 ## Authors:
