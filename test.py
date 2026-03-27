@@ -1,8 +1,6 @@
-# test.py
-
 from replica import Replica
-
-def make_replicas(n):
+#optional test file for part A
+def makeReplicas(n):
     replicas = {}
     for i in range(n):
         replicas[i] = None
@@ -11,13 +9,13 @@ def make_replicas(n):
     return replicas
 
 
-def print_stores(replicas, label="stores"):
+def printStores(replicas, label="stores"):
     print(f"\n--- {label} ---")
     for rid in sorted(replicas):
         print(f"Replica {rid}: {replicas[rid].store}")
 
 
-def assert_same_stores(replicas):
+def assertSameStores(replicas):
     stores = [replicas[rid].store for rid in sorted(replicas)]
     first = stores[0]
     for s in stores[1:]:
@@ -25,39 +23,39 @@ def assert_same_stores(replicas):
     print("PASS: all replicas have identical store state")
 
 
-def assert_delivered_everywhere(replicas, update_id):
+def assertDeliveredEverywhere(replicas, updateId):
     for rid in replicas:
-        assert update_id in replicas[rid].delivered, (
-            f"Replica {rid} did not deliver {update_id}"
+        assert updateId in replicas[rid].delivered, (
+            f"Replica {rid} did not deliver {updateId}"
         )
-    print(f"PASS: update {update_id} delivered everywhere")
+    print(f"PASS: update {updateId} delivered everywhere")
 
 
 # -----------------------------
 # TEST 1: single put
 # -----------------------------
-def test_single_put():
+def testSinglePut():
     print("\nTEST 1: single put")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     replicas[0].broadcastUpdate(
         updateID="u1",
         op={"type": "put", "key": "x", "value": "hello"}
     )
 
-    print_stores(replicas, "after single put")
-    assert_delivered_everywhere(replicas, "u1")
-    assert_same_stores(replicas)
+    printStores(replicas, "after single put")
+    assertDeliveredEverywhere(replicas, "u1")
+    assertSameStores(replicas)
     assert replicas[0].store["x"] == "hello"
-    print("PASS: test_single_put")
+    print("PASS: testSinglePut")
 
 
 # -----------------------------
 # TEST 2: append after put
 # -----------------------------
-def test_put_then_append():
+def testPutThenAppend():
     print("\nTEST 2: put then append")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     replicas[0].broadcastUpdate(
         updateID="u1",
@@ -69,20 +67,20 @@ def test_put_then_append():
         op={"type": "append", "key": "msg", "suffix": "!"}
     )
 
-    print_stores(replicas, "after put then append")
-    assert_delivered_everywhere(replicas, "u1")
-    assert_delivered_everywhere(replicas, "u2")
-    assert_same_stores(replicas)
+    printStores(replicas, "after put then append")
+    assertDeliveredEverywhere(replicas, "u1")
+    assertDeliveredEverywhere(replicas, "u2")
+    assertSameStores(replicas)
     assert replicas[0].store["msg"] == "hi!"
-    print("PASS: test_put_then_append")
+    print("PASS: testPutThenAppend")
 
 
 # -----------------------------
 # TEST 3: multiple increments
 # -----------------------------
-def test_multiple_increments():
+def testMultipleIncrements():
     print("\nTEST 3: multiple increments")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     replicas[0].broadcastUpdate(
         updateID="u1",
@@ -104,18 +102,18 @@ def test_multiple_increments():
         op={"type": "incr", "key": "count"}
     )
 
-    print_stores(replicas, "after multiple increments")
-    assert_same_stores(replicas)
+    printStores(replicas, "after multiple increments")
+    assertSameStores(replicas)
     assert replicas[0].store["count"] == 3
-    print("PASS: test_multiple_increments")
+    print("PASS: testMultipleIncrements")
 
 
 # -----------------------------
 # TEST 4: concurrent-style updates
 # -----------------------------
-def test_conflicting_updates_total_order():
+def testConflictingUpdatesTotalOrder():
     print("\nTEST 4: conflicting updates still converge")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     # initialize
     replicas[0].broadcastUpdate(
@@ -134,22 +132,22 @@ def test_conflicting_updates_total_order():
         op={"type": "append", "key": "x", "suffix": "B"}
     )
 
-    print_stores(replicas, "after conflicting appends")
-    assert_delivered_everywhere(replicas, "u1")
-    assert_delivered_everywhere(replicas, "u2")
-    assert_same_stores(replicas)
+    printStores(replicas, "after conflicting appends")
+    assertDeliveredEverywhere(replicas, "u1")
+    assertDeliveredEverywhere(replicas, "u2")
+    assertSameStores(replicas)
 
-    final_value = replicas[0].store["x"]
-    assert final_value in ("AB", "BA"), f"Unexpected final value: {final_value}"
-    print(f"PASS: all replicas agree on x = {final_value}")
+    finalValue = replicas[0].store["x"]
+    assert finalValue in ("AB", "BA"), f"Unexpected final value: {finalValue}"
+    print(f"PASS: all replicas agree on x = {finalValue}")
 
 
 # -----------------------------
 # TEST 5: duplicate delivery prevention
 # -----------------------------
-def test_no_duplicate_delivery():
+def testNoDuplicateDelivery():
     print("\nTEST 5: duplicate delivery prevention")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     replicas[0].broadcastUpdate(
         updateID="u1",
@@ -162,8 +160,8 @@ def test_no_duplicate_delivery():
         op={"type": "put", "key": "y", "value": "twice?"}
     )
 
-    print_stores(replicas, "after duplicate updateID attempt")
-    assert_same_stores(replicas)
+    printStores(replicas, "after duplicate updateID attempt")
+    assertSameStores(replicas)
 
     # because delivered set is keyed by updateID,
     # second one should not be applied again
@@ -174,9 +172,9 @@ def test_no_duplicate_delivery():
 # -----------------------------
 # TEST 6: all replicas same delivery order
 # -----------------------------
-def test_same_delivery_order():
+def testSameDeliveryOrder():
     print("\nTEST 6: same delivery order")
-    replicas = make_replicas(3)
+    replicas = makeReplicas(3)
 
     updates = [
         ("u1", {"type": "put", "key": "z", "value": ""}, 0),
@@ -188,23 +186,23 @@ def test_same_delivery_order():
     for uid, op, sender in updates:
         replicas[sender].broadcastUpdate(uid, op)
 
-    print_stores(replicas, "after same-order test")
-    assert_same_stores(replicas)
+    printStores(replicas, "after same-order test")
+    assertSameStores(replicas)
 
-    delivered_sets = [replicas[r].delivered for r in replicas]
-    first = delivered_sets[0]
-    for ds in delivered_sets[1:]:
+    deliveredSets = [replicas[r].delivered for r in replicas]
+    first = deliveredSets[0]
+    for ds in deliveredSets[1:]:
         assert ds == first, "Delivered update sets differ across replicas"
 
     print("PASS: all replicas delivered same set of updates")
 
 
 if __name__ == "__main__":
-    test_single_put()
-    test_put_then_append()
-    test_multiple_increments()
-    test_conflicting_updates_total_order()
-    test_no_duplicate_delivery()
-    test_same_delivery_order()
+    testSinglePut()
+    testPutThenAppend()
+    testMultipleIncrements()
+    testConflictingUpdatesTotalOrder()
+    testNoDuplicateDelivery()
+    testSameDeliveryOrder()
 
     print("\nAll tests finished.")
